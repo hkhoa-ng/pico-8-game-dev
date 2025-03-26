@@ -11,13 +11,15 @@ grid = {
     {0,0,0,0,0,0,0},
     {0,0,0,0,0,0,0},
     {0,0,0,0,0,0,0},
-    {0,0,0,0,0,0,0},
-    {0,0,0,0,0,0,0},
-    {0,0,0,0,0,0,0},
-    {0,0,0,0,0,0,0},
+    {0,0,0,5,0,0,0},
+    {0,0,0,4,0,0,0},
+    {0,0,0,2,0,0,0},
+    {0,0,0,1,0,0,0},
 }
 grid_size = 7
 tile_size = 13
+line_length = tile_size * (grid_size + 1)
+grid_offset = 64 - line_length/2 - tile_size/2
 spr_offset = 3
 null_block = -10
 
@@ -27,27 +29,46 @@ new_disc = {
     curr_c = 1,
     to_c = 1,
 }
-move_speed = 0.05
-possible_disc_vals = {1,2,3,4,5,6,7}
+move_speed = 0.02
+possible_disc_vals = {-2,1,2,3,4,5,6,7}
+new_disc_bounce_timer = 0
+new_disc_bounce_amp = 2
+new_disc_bounce_speed = 60
+new_disc_top_offset = 1
 
 -- Rising row
-drops_for_new_row = 7
+drops_for_new_row = 21
 drops_counter = 0
 
 -- Dropping disc
 drop_discs = {}
-gravity = 0.1
+gravity = 0.07
 found_hanging_discs = false
 
 -- Clearing disc
 clear_discs = {}
--- found_discs_to_clear = false
 flash_dur = 30  -- number of frames to flash
 
 -- Screenshake
 shake = 0 
 shake_amp = 3
 shake_fade = 0.5
+
+-- Scoring
+score = 0
+combo = 0
+can_combo = true
+floating_txts = {}
+
+-- Particles
+smokes = {}
+new_bg_line_timer = 0
+trails = {}
+
+-- Background lines
+bg_lines = {}
+bg_line_speed = 1
+bg_line_length = 30
 
 -- Debug
 debug1 = #clear_discs
@@ -59,15 +80,19 @@ function _init()
             grid[r][c] = 0
         end
     end
+    new_disc.val = rnd(possible_disc_vals)
 end
 
 function _update60()
     if screen == "menu" then
         if (btnp(4) or btnp(5)) screen = "game"
     elseif screen == "game" then
-        debug1 = state
-        debug2 = drops_counter
+        new_bg_line_timer = (new_bg_line_timer + 1) % 361
+        if (new_bg_line_timer % 40 == 0) make_bg_lines()
+
         screen_shake()
+        update_floating_text()
+        update_smoke()
         if state == "control" then
             control()
         elseif state == "dropping" then
@@ -88,13 +113,20 @@ end
 function _draw()
     if screen == "menu" then
         cls()
-        prinx_shadow("\^w\^tdrop7", 50, 7, 2)
+        prinx_drop_shadow("\^w\^tdrop7", 50, 7, 2)
         prinx_wavy_shadow("press ❎  or 🅾️  to start!", 70, 13, 2, 2, 55)
     elseif screen == "game" then
         cls()
         -- print(debug1, 0, 110)
-        print(debug2, 0, 120)
+        -- print(debug2, 0, 120)
+        draw_bg_lines()
+        print_drop_shadow("score:"..score, 2, 120, 11, 1)
+        print_drop_shadow("x"..combo.." combo", 95, 120, 11, 1)
         draw_grid()
+        draw_trails()
+        draw_drop_counter()
+        draw_smokes()
+        draw_floating_text()
         if state == "control" then
             draw_new_disc()
         elseif state == "dropping" then
@@ -113,6 +145,8 @@ end
 -->8
 -- control & physics
 function control()
+    -- Reset combo
+    combo = 0
     -- Move left right & wrap
     if btnp(0) then
         -- sfx(0)
@@ -196,7 +230,12 @@ function dropping_disc()
     for _,disc in pairs(drop_discs) do
         if (disc.curr_r <= grid_size and disc.curr_r >= 1 and disc.curr_r == flr(disc.curr_r)) grid[disc.curr_r][disc.c] = 0
         disc.curr_r = move_towards(disc.curr_r, disc.to_r, gravity)
+        -- Trailing
+        for i=1,4 do
+            if (disc.to_r-disc.curr_r > 0.25) make_trail(grid_offset+disc.c*(tile_size+0.25)+spr_offset+i, grid_offset+(disc.curr_r-0.2)*tile_size, get_color_of_disc(disc.val))
+        end
         if disc.curr_r == disc.to_r then
+            if (disc.val ~= 0) make_smoke(disc.c*(tile_size+0.5)+grid_offset+2*spr_offset, (disc.to_r+1)*tile_size+grid_offset, 1)
             if disc.bounces ~= 0 then
                 shake = 1
                 -- sfx(1)
@@ -208,9 +247,7 @@ function dropping_disc()
             end
         end
     end
-    if is_empty(drop_discs) then
-        state = "clearing"
-    end 
+    if (#drop_discs == 0) state = "clearing"
 end
 
 function move_towards(current, target, speed)
@@ -295,67 +332,128 @@ function check_gray_discs(r, c)
     -- Check left
     if (c > 1 and grid[r][c-1] < 0) then
         grid[r][c-1] += 1
-        if (grid[r][c-1] == 0) grid[r][c-1] = rnd(possible_disc_vals)
+        if (grid[r][c-1] == 0) then 
+            grid[r][c-1] = rnd(possible_disc_vals)
+            make_smoke((c-1)*(tile_size+0.5)+grid_offset+2*spr_offset, (r+0.5)*tile_size+grid_offset, 6)
+        end
     end
     -- Check right
     if (c < grid_size and grid[r][c+1] < 0) then
         grid[r][c+1] += 1
-        if (grid[r][c+1] == 0) grid[r][c+1] = rnd(possible_disc_vals)
+        if (grid[r][c+1] == 0) then
+            grid[r][c+1] = rnd(possible_disc_vals)
+            make_smoke((c+1)*(tile_size+0.5)+grid_offset+2*spr_offset, (r+0.5)*tile_size+grid_offset, 6)
+        end
     end
     -- Check up
     if (r > 1 and grid[r-1][c] < 0) then
         grid[r-1][c] += 1
-        if (grid[r-1][c] == 0) grid[r-1][c] = rnd(possible_disc_vals)
+        if (grid[r-1][c] == 0) then
+            grid[r-1][c] = rnd(possible_disc_vals)
+            make_smoke((c)*(tile_size+0.5)+grid_offset+2*spr_offset, (r-0.5)*tile_size+grid_offset, 6)
+        end
     end
     -- Check down
     if (r < grid_size and grid[r+1][c] < 0) then
         grid[r+1][c] += 1
-        if (grid[r+1][c] == 0) grid[r+1][c] = rnd(possible_disc_vals)
+        if (grid[r+1][c] == 0) then
+            grid[r+1][c] = rnd(possible_disc_vals)
+            make_smoke((c)*(tile_size+0.5)+grid_offset+2*spr_offset, (r+1.5)*tile_size+grid_offset, 6)
+        end
+    end
+end
+
+function update_floating_text()
+    for _,txt in pairs(floating_txts) do
+        txt.curr_y = move_towards(txt.curr_y, txt.to_y, txt.speed)
+
+        if txt.curr_y == txt.to_y then
+            if txt.linger ~= 0 then
+                txt.linger -= 1
+            else
+                del(floating_txts, txt)
+            end
+        end
+    end
+end
+
+function update_smoke() 
+    for _,smoke in pairs(smokes) do
+        smoke.life -= 1
+        smoke.x = move_towards(smoke.x, smoke.to_x, smoke.speed)
+        smoke.y = move_towards(smoke.y, smoke.to_y, smoke.speed)
+        if (smoke.life <= 0) del(smokes, smoke)
     end
 end
 -->8
 -- draw & animation
 function draw_grid()
+    rectfill(grid_offset+tile_size, grid_offset+tile_size, grid_offset+line_length, grid_offset+line_length, 0)
     for row=1,grid_size do
-        gap = row*(tile_size) + tile_size
-        length = tile_size*grid_size + tile_size
-        line(tile_size, tile_size, length, tile_size, 1)
-        line(tile_size, tile_size, tile_size, length, 1)
-        line(tile_size, gap, length, gap, 1)
-        line(gap, tile_size, gap, length, 1)
+        local gap = (row + 1) * tile_size
+
+        line(tile_size + grid_offset, grid_offset + tile_size, line_length + grid_offset, grid_offset + tile_size, 1)
+        line(tile_size + grid_offset, grid_offset + tile_size, grid_offset + tile_size, line_length + grid_offset, 1)
+        line(tile_size + grid_offset, gap + grid_offset, line_length + grid_offset, gap + grid_offset, 1)
+        line(grid_offset + gap, tile_size + grid_offset, grid_offset + gap, line_length + grid_offset, 1)
         for col=1,grid_size do
             if grid[row][col] > 0 and grid[row][col] ~= null_block then
-                -- print(grid[row][col], col*tile_size+spr_offset, row*tile_size+spr_offset, 7)
-                spr(grid[row][col], col*tile_size+spr_offset, row*tile_size+spr_offset)
+                spr(grid[row][col], col*tile_size+spr_offset+grid_offset, row*tile_size+spr_offset+grid_offset)
             end
-            if (grid[row][col] == -2) spr(8, col*tile_size+spr_offset, row*tile_size+spr_offset)
-            if (grid[row][col] == -1) spr(9, col*tile_size+spr_offset, row*tile_size+spr_offset)
+            if (grid[row][col] == -2) spr(8, col*tile_size+spr_offset+grid_offset, row*tile_size+spr_offset+grid_offset)
+            if (grid[row][col] == -1) spr(9, col*tile_size+spr_offset+grid_offset, row*tile_size+spr_offset+grid_offset)
         end
     end
 end
 
 function draw_new_disc() 
-    -- print(new_disc.val, new_disc.curr_c*tile_size + spr_offset, spr_offset, 14)
-    spr(new_disc.val, new_disc.curr_c*tile_size + spr_offset, spr_offset)
+    local val, c = new_disc.val, new_disc.curr_c
+    new_disc_bounce_timer = (new_disc_bounce_timer + 1) % 361
+    spr(val, c*tile_size + spr_offset + grid_offset, new_disc_top_offset + grid_offset + wiggle(new_disc_bounce_timer, new_disc_bounce_amp, new_disc_bounce_speed))
+    if (val == -2) spr(8, c*tile_size + spr_offset + grid_offset, new_disc_top_offset + grid_offset + wiggle(new_disc_bounce_timer, new_disc_bounce_amp, new_disc_bounce_speed))
+    -- Ghost piece
+    for r=grid_size,1,-1 do
+        if grid[r][flr(c)] == 0 then
+            for col=0,15 do
+                pal(col, 1)
+            end
+            spr(val, c*tile_size + spr_offset +grid_offset, r*tile_size+spr_offset+grid_offset)
+            if (val == -2) spr(8, c*tile_size + spr_offset +grid_offset, r*tile_size+spr_offset+grid_offset)
+            pal()
+            break
+        end
+    end
 end
 
 function draw_drop_discs() 
     for _,disc in pairs(drop_discs) do
-        -- print(disc.val, disc.c*tile_size + spr_offset, disc.curr_r*tile_size + spr_offset, 10)
-        if (disc.val ~= 0) spr(disc.val, disc.c*tile_size + spr_offset, disc.curr_r*tile_size + spr_offset)
+        if (disc.val ~= 0) spr(disc.val, disc.c*tile_size + spr_offset +grid_offset, disc.curr_r*tile_size + spr_offset +grid_offset)
+        if (disc.val == -2) spr(8, disc.c*tile_size + spr_offset +grid_offset, disc.curr_r*tile_size + spr_offset +grid_offset)
     end 
 end
 
 function flash_n_clear_discs()
     if (#clear_discs == 0) return
+    if can_combo then
+        combo += 1
+        can_combo = false
+    end
     for _,disc in pairs(clear_discs) do
         r, c = disc.r, disc.c
         disc.flash_dur -= 1
         if (disc.flash_dur % 5 == 0) then
-            -- print(disc.val, c*tile_size+spr_offset, r*tile_size+spr_offset, 12)
-            spr(disc.val, c*tile_size+spr_offset, r*tile_size+spr_offset)
+            spr(disc.val, c*tile_size+spr_offset +grid_offset, r*tile_size+spr_offset+grid_offset)
         end
         if disc.flash_dur == 0 then
+            score += disc.val * combo
+            make_floating_text(
+                "+"..(combo * disc.val),
+                10,
+                -- 7,
+                grid_offset + c*tile_size + spr_offset,
+                grid_offset + r*tile_size - 1,
+                grid_offset + r*tile_size - 6
+            )
             grid[r][c] = 0
             check_gray_discs(r, c)
             del(clear_discs, disc)
@@ -364,7 +462,58 @@ function flash_n_clear_discs()
 
     if #clear_discs == 0 then
         state = "dropping"
+        can_combo = true
         found_hanging_discs = false
+    end
+end
+
+function draw_drop_counter()
+    local remain = drops_for_new_row - drops_counter
+    for i=1,drops_for_new_row do
+        if (i<8) spr(19, grid_offset+line_length,grid_offset+tile_size*i+spr_offset) 
+        if (i>7 and i<15) spr(17, spr_offset+grid_offset+tile_size*(i-7), grid_offset+line_length)
+        if (i>14) spr(19, grid_offset+tile_size/2-1, grid_offset+tile_size*(i-14)+spr_offset) 
+    end
+    for i=1,remain do
+        if (i<8) spr(20, grid_offset+line_length,grid_offset+tile_size*i+spr_offset) 
+        if (i>7 and i<15) spr(18, spr_offset+grid_offset+tile_size*(7-i)+line_length, grid_offset+line_length)
+        if (i>14) spr(20, grid_offset+tile_size/2-1, grid_offset+tile_size*(14-i)+spr_offset+line_length)
+        
+    end
+end
+
+function draw_floating_text()
+    for _,txt in pairs(floating_txts) do
+        print(txt.text, txt.x, txt.curr_y, txt.color)
+    end
+end
+
+function draw_smokes()
+    for _,smoke in pairs(smokes) do
+        circfill(smoke.x, smoke.y, smoke.r, smoke.color)
+    end
+end
+
+function draw_trails()
+    for _,t in pairs(trails) do
+        circfill(t.x, t.y, t.r, t.c)
+        t.life -= 1
+        if (t.life <= 0) del(trails, t)
+    end
+end
+
+function draw_bg_lines()
+    for _,bg_line in pairs(bg_lines) do
+        local x, y, l, spd = bg_line.x, bg_line.y, bg_line.length, bg_line.speed
+        local speed_x, speed_y = bg_line.dir_x * spd, bg_line.dir_y * spd
+        bg_line.x += speed_x
+        bg_line.y += speed_y
+        local offset_1, offset_2 = 6+rnd(3), 2+rnd(2)
+        line(x,y, x-speed_x*l, y-speed_y*l, 1)
+        line(x,y, x-speed_x*offset_1, y-speed_y*offset_1, 2)
+        line(x,y, x-speed_x*offset_2, y-speed_y*offset_2, 5)
+        line(x,y,x,y,rnd({7,10}))
+        if (x+l<0 or x-l>128 or y+l<0 or y-l>128) del(bg_lines, bg_line)
     end
 end
 
@@ -381,30 +530,24 @@ function prinx(text, y, color)
     print(text,64-#text*2,y,color)
 end
 
-function prinx_shadow(text, y, color, shadow)
+function print_drop_shadow(t, x, y, c, s_c)
+    print(t, x+1, y+1, s_c)
+    print(t, x, y, c)
+end
+
+function prinx_drop_shadow(text, y, color, shadow)
     local x = 64-#text*2
-    for dx=-1,1,2 do
-        print(text, x+dx, y, shadow)
-        print(text, x, y+dx, shadow)
-    end
-    prinx(text, y, color)
+    print_drop_shadow(text, x, y, color, shadow)
 end
 
 function prinx_wavy_shadow(text, y, color, shadow, amplitude, speed)
     wavy_text_timer = (wavy_text_timer + 1) % 361
     for i=0,#text do
         local x = 64-#text*2 + i*4
-        local w = sin((wavy_text_timer+i)/speed)*amplitude
-        for dx=-1,1,2 do
-            print(sub(text,i,i), x+dx, y+w, shadow)
-            print(sub(text,i,i), x, y+w+dx, shadow)
-        end
-        print(sub(text,i,i), x, y+w, color)
+        local w = wiggle(wavy_text_timer+i, amplitude, speed)
+        local t = sub(text,i,i)
+        print_drop_shadow(t, x, y+w, color, shadow)
     end
-end
-
-function lerp(a, b, t)
-    return a + (b - a) * t
 end
 
 function make_drop_disc(val, curr_r, to_r, c)
@@ -415,13 +558,6 @@ function make_drop_disc(val, curr_r, to_r, c)
         c = c,
         bounces = 2,
     })
-end
-
-function is_empty(t)
-	for _,_ in pairs(t) do
-		return false
-	end
-	return true
 end
 
 function lists_equal(list1, list2)
@@ -450,15 +586,127 @@ function make_clear_disc(val, curr_r, curr_c)
     })
 end
 
+function make_floating_text(t, c, x, curr_y, to_y)
+    add(floating_txts, {
+        text = t,
+        color = c, 
+        x = x,
+        curr_y = curr_y,
+        to_y = to_y,
+        speed = 0.1,
+        linger = 15 -- number of frames to linger after reaching
+    })
+end
+
+function make_smoke(x, y, num)
+    local cols = {5,6,7,13} 
+    local radii = {1,2}
+    for i=1,num do
+        local w = 3
+        local x_offset = w - rnd(2*w)
+        add(smokes, {
+            r = rnd(radii),
+            x = x + x_offset,
+            y = y,
+            to_x = x + 2*x_offset,
+            to_y = y - rnd(5),
+            speed = rnd(0.2),
+            life = 15 + rnd(10),
+            color = rnd(cols),
+        })
+    end
+end
+
+function make_trail(x, y, c)
+    add(trails, {
+        x = x,
+        y = y,
+        c = c,
+        r = rnd({0.5,1}),
+        life = 2 + rnd(5),
+    })
+end
+
+function make_bg_lines()
+    local start = rnd({"u", "d", "l", "r"})
+    if (start == "u") then 
+        add(bg_lines, {
+            x = 2+rnd(126),
+            y = 0,
+            speed = bg_line_speed + rnd(bg_line_speed),
+            dir_x = 0,
+            dir_y = 1,
+            star = 7, -- color of the main star
+            length = bg_line_length + rnd(20), -- length of trail
+        })
+    end
+    if (start == "d") then
+        add(bg_lines, {
+            x = 2+rnd(126),
+            y = 128,
+            speed = bg_line_speed + rnd(bg_line_speed),
+            dir_x = 0,
+            dir_y = -1,
+            star = 7,
+            length = bg_line_length + rnd(20), -- length of trail
+        })
+    end
+    if (start == "l") then
+        add(bg_lines, {
+            x = 0,
+            y = 2+rnd(126),
+            speed = bg_line_speed + rnd(bg_line_speed),
+            dir_x = 1,
+            dir_y = 0,
+            star = 7,
+            length = bg_line_length + rnd(20), -- length of trail
+        })
+    end
+    if (start == "r") then
+        add(bg_lines, {
+            x = 128,
+            y = 2+rnd(126),
+            speed = bg_line_speed + rnd(bg_line_speed),
+            dir_x = -1,
+            dir_y = 0,
+            star = 7,
+            length = bg_line_length + rnd(20), -- length of trail
+        })
+    end
+end
+
+function get_color_of_disc(val)
+    if (val == 1) return 11
+    if (val == 2) return 10
+    if (val == 3) return 9
+    if (val == 4) return 8
+    if (val == 5) return 14
+    if (val == 6) return 12
+    if (val == 7) return 4
+    if (val == -2 or val == -1) return 13
+end
+
+function wiggle(timer, amp, speed)
+    return amp*sin(timer/speed)
+end
+
 __gfx__
-0000000000000700077aaa000aaaaa00eeee00e27eeeeee80777cc10eeeeeee20077770000777700000000000000000000000000000000000000000000000000
-00000000000073007aa900a9a9999994e88200e27ee800007cccccc1e220022207ddddd007000060000000000000000000000000000000000000000000000000
-007007000007b3007aa900a9a9940094e88200e207eeee807cc100000000e2207dddddd5700dd005000000000000000000000000000000000000000000000000
-00077000007bb300999900a944440094e88200e2000000e87cc10000000e22007dddddd570dddd05000000000000000000000000000000000000000000000000
-0007700007bbb300000000a900000494e88200e27ee800e87ccccc10000e22007dddddd570ddd505000000000000000000000000000000000000000000000000
-00700700007bb300077aaa9000000094022888827ee800e87cc100c1000e22007dddddd5700d5005000000000000000000000000000000000000000000000000
-00000000007bb3007aa90000aa990094000000e27ee800e87cc100c1000e22000ddddd5006000050000000000000000000000000000000000000000000000000
-00000000003333000999999904444440000000e20888888001cccc10000e22000055550000555500000000000000000000000000000000000000000000000000
+000000000000030007aaaa000aaaaa00eeee00e27eeeeee80777cc10994444420077770000777700000000000000000000000000000000000000000000000000
+00000000000073007aa900a9a9999994e88200e27ee800007cccccc19440044207ddddd007000060000000000000000000000000000000000000000000000000
+007007000007b300aaa900a9a9940094e88200e207eeee807cc10000000044207dddddd5700dd005000000000000000000000000000000000000000000000000
+00077000007bb300999900a944440094e88200e2000000e87cc10000000942007dddddd570dddd05000000000000000000000000000000000000000000000000
+0007700007bbb300000000a900000494e88200e27ee800e87ccccc10000942007dddddd570ddd505000000000000000000000000000000000000000000000000
+0070070000bbb300077aaa9000000094022888827ee800e8ccc100c1000942007dddddd5700d5005000000000000000000000000000000000000000000000000
+0000000000bbb3007aa90000aa990094000000e27ee800e8ccc100c1000942000ddddd5006000050000000000000000000000000000000000000000000000000
+00000000003333000999999904444440000000e20888888001cccc10000942000055550000555500000000000000000000000000000000000000000000000000
+00000000000000000000000000001000000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000011000000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000011000000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000011111110333333300011000000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000111111103333333000011000000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000011000000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000011000000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000010000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __label__
 11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
 11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111
